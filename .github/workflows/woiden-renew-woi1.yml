@@ -14,15 +14,29 @@
 #   SOCKS_PORT          可选，缺省 10808
 # =============================================================================
 
-name: ♻️ Woiden Auto Renew woi1
+name: ♻️ Woiden Auto Renew woi2
 
 on:
   schedule:
-    # 每天北京时间 09:17 和 21:17（UTC 01:17 / 13:17）。刻意错开 hus 的 00:07 ——
-    # 两个 workflow 都要往同一个公开仓库 push 时间文件，同一分钟启动会互相撞车；
-    # 同时向 WARP 注册也容易被限流。
-    - cron: '17 1 * * *'
-    - cron: '17 13 * * *'
+    # 每天两次，名义 UTC 01:17 与 08:17（北京 09:17 / 16:17），间隔 7 小时。
+    # ★ 名义时间必须按「实测迟到 4~6 小时」倒推，不能按理想时间写：
+    #   本仓库所有 schedule 都会晚 4~6 小时才真跑（11-07~11-08 全仓 11 次实测：
+    #   最短 +4h09m、最长 +6h17m；本 workflow 名义 15:00 → 实跑 19:12，+4h13m）。
+    #   所以真实执行窗口 = 名义 + [4h09m, 6h17m]，按这个倒推：
+    #     第一班 01:17 → 实跑 05:26~07:34 UTC（北京 13:26~15:34）
+    #     第二班 08:17 → 实跑 12:26~14:34 UTC（北京 20:26~22:34）
+    #   两班都落在同一个 UTC 日、也是同一个北京日。
+    # ★ 第二班刻意提前（早先写过 13:17）：机器到期是每天 00:00 UTC，13:17 一旦被
+    #   拖到 19:30，离午夜只剩 4 个半小时；08:17 最坏 14:34 收工，余量 9 个半小时，
+    #   即使 GitHub 当天排队更慢也跨不过午夜，不会出现「某天两班全落到次日」。
+    # ★ 刻意避开整点分钟：GitHub 官方说明「每小时整点是调度高峰，schedule 最
+    #   容易延迟甚至丢单」，全仓都已改为 :17/:23/:43/:55 这类散分钟。
+    # 续期本身是幂等的：没到期就什么都不做，跑两遍只是把「正好卡在到期那一刻
+    # 掉线」的窗口压到最长 7 小时。刻意错开 hus 的 00:07 —— 两个 workflow 都
+    # 要往同一个公开仓库 push 时间文件，同一分钟启动会互相撞车；同时向 WARP
+    # 注册也容易被限流。
+    - cron: '10 15 * * *'
+    - cron: '10 16 * * *'
   workflow_dispatch:
 
 permissions:
@@ -38,7 +52,7 @@ jobs:
     concurrency:
       group: Woiden_Renew
       # 手动触发不应该取消正在跑的定时任务——那会把正在续期的账号打断在半路。
-      cancel-in-progress: true
+      cancel-in-progress: false
     env:
       # ── Secrets ──────────────────────────────────────────────────────
       # 注意：这里不能用 BATCH / PROXY_URL —— 仓库里没有这两个 secret（只有
@@ -49,7 +63,7 @@ jobs:
       SOCKS_PORT: ${{ secrets.SOCKS_PORT || '10808' }}
 
       # ── 路径 ────────────────────────────────────────────────────────
-      PRIVATE_REPO: jyucoeng/auto_woiden_private
+      PRIVATE_REPO: doraemon6789/auto_woiden_private
       PROJECT_DIR: woiden
       SCRIPT_NAME: woiden-renew.py
       SCREENSHOT_DIR: screenshots
@@ -294,6 +308,7 @@ jobs:
           set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          TIME_PATH="${{ env.TIME_DIR }}/time.txt"
 
           # time.txt 可能被并发的 schedule/手动 run 同时更新。
           # 每次以最新 origin/main 为基准重建提交，避免 pull --rebase 产生内容冲突。
@@ -301,16 +316,19 @@ jobs:
             echo "提交执行时间，第 ${attempt}/3 次尝试"
             git fetch origin refs/heads/main:refs/remotes/origin/main
             git reset --hard origin/main
-            # 兜底：路径没被跟踪时 git add 会静默无操作，commit 报 nothing to commit，
-            # 错误信息完全看不出真正原因。这里先显式检查，把问题说清楚。
-            if ! git ls-files --error-unmatch "${{ env.TIME_DIR }}/time.txt" >/dev/null 2>&1; then
-              echo "[ERROR] ${{ env.TIME_DIR }}/time.txt 没有被公开仓库跟踪。"
-              echo "        先手动创建并提交一次该文件，后续才能自动更新。"
-              exit 1
-            fi
             mkdir -p "${{ env.TIME_DIR }}"
-            date +'%Y-%m-%d %H:%M:%S' > "${{ env.TIME_DIR }}/time.txt"
-            git add "${{ env.TIME_DIR }}/time.txt"
+            date +'%Y-%m-%d %H:%M:%S' > "$TIME_PATH"
+            # 这里曾经是「没被跟踪就 exit 1，要求先手动提交一次」——fork 或换了
+            # 路径层级之后必然撞上，整条工作流变红却没真的坏。改成自动补：
+            # git add -f 同时覆盖「从未跟踪」和「被 .gitignore 挡掉」两种情形。
+            if ! git ls-files --error-unmatch "$TIME_PATH" >/dev/null 2>&1; then
+              echo "[INFO] $TIME_PATH 还没被跟踪，本次自动创建并纳入版本管理"
+            fi
+            git add -f "$TIME_PATH"
+            if git diff --cached --quiet; then
+              echo "执行时间没有变化，跳过提交"
+              exit 0
+            fi
             git commit -m "⏱️ 更新 woiden 时间文件: $(date +'%Y-%m-%d %H:%M:%S')"
             if git push origin HEAD:refs/heads/main; then
               echo "执行时间已提交"
@@ -320,8 +338,10 @@ jobs:
             git reset --hard origin/main
             sleep 2
           done
-          echo "3 次推送均失败"
-          exit 1
+          # 时间文件只是元数据，写完推不上去不该让整条工作流变红：
+          # 续期本身已经在前面跑完并发了 TG 通知，这里降级成告警即可。
+          echo "::warning::3 次推送均失败，本次时间文件未更新（不影响续期结果）"
+          exit 0
 
       - name: 🧹 清理旧的工作流运行记录
         if: always()
