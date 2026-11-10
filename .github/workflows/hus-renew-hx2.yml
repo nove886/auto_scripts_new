@@ -33,7 +33,7 @@ name: 🔄 Hus Auto Renew hx2
 
 on:
   schedule:
-    - cron: '07 3 */2 * *'  #每2天UTC 00:07（第①份，错开避免并发）
+    - cron: '07 3 * * *'  #每天UTC 00:07（第①份，错开避免并发）
   workflow_dispatch:
 
 permissions:
@@ -47,10 +47,10 @@ jobs:
     # 被硬砍会在账号处理到一半时中断（留下"续了一半"的状态）。
     timeout-minutes: 120
     concurrency:
-      group: Hus_Renew_hx2
+      group: Hus_Renew_2
       # 手动触发不应该取消正在跑的定时任务——那会把正在续期的账号打断在半路。
       # 设成 false 后，新任务排队等待，而不是抢占。
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       # ════════════════════════════════════════════════════════════════
       # Secrets（在公开 repo → Settings → Secrets 中配置）
@@ -79,7 +79,7 @@ jobs:
       # 登录重试次数
       MAX_LOGIN_RETRIES: "1"
       # 私有仓库（含 hus-renew.py）
-      PRIVATE_REPO: jyucoeng/auto_hus_private
+      PRIVATE_REPO: doraemon6789/auto_hus_private
       PROJECT_DIR: hus
       # 每份 workflow 各写各的时间文件，多账号并发也不会互相覆盖
       TIME_DIR: hus/2
